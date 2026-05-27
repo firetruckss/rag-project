@@ -1,5 +1,10 @@
 import streamlit as st
-from rag_engine import build_or_load_index, get_query_engine
+import tempfile
+import os
+from rag_engine import build_or_load_index, get_query_engine, Settings
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext
+import chromadb
+from llama_index.vector_stores.chroma import ChromaVectorStore
 
 st.set_page_config(
     page_title="Document Intelligence",
@@ -8,38 +13,36 @@ st.set_page_config(
 )
 
 st.title("📄 Document Intelligence")
-st.caption("Ask anything about your uploaded documents")
+st.caption("Upload a document and ask anything about it")
 
-# This loads the index only once — not every time you ask a question
-@st.cache_resource
-def load_engine():
-    index = build_or_load_index()
-    return get_query_engine(index)
+# File uploader
+uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
 
-engine = load_engine()
+if uploaded_file is not None:
+    @st.cache_resource
+    def load_engine_from_file(file_name, file_bytes):
+        # Save uploaded file to a temp directory
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, file_name)
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
 
-# Keep track of the conversation
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+            # Build index from the temp directory
+            chroma_client = chromadb.EphemeralClient()
+            chroma_collection = chroma_client.get_or_create_collection("documents")
+            from llama_index.vector_stores.chroma import ChromaVectorStore
+            vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-# Show previous messages
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+            documents = SimpleDirectoryReader(tmp_dir).load_data()
+            index = VectorStoreIndex.from_documents(
+                documents,
+                storage_context=storage_context,
+                show_progress=True
+            )
+            return index.as_query_engine(similarity_top_k=5, response_mode="compact")
 
-# Handle new question
-if question := st.chat_input("Ask a question about your documents..."):
-    
-    # Show user message
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.write(question)
+    engine = load_engine_from_file(uploaded_file.name, uploaded_file.getvalue())
 
-    # Get answer and show it
-    with st.chat_message("assistant"):
-        with st.spinner("Reading documents..."):
-            response = engine.query(question)
-            answer = str(response)
-        st.write(answer)
-
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    # Chat history
+    if "messages" not in
